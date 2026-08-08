@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RetailRocket 未看过商品推荐</title>
+  <style>
+    :root { color: #1f2937; background: #f3f4f6; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main { width: min(1040px, calc(100% - 32px)); margin: 32px auto; }
+    header, .form-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+    header { margin-bottom: 20px; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 26px; }
+    h2 { font-size: 17px; }
+    .status { padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 4px; background: #fff; color: #4b5563; font-size: 14px; }
+    .status.online { border-color: #bbd7c4; background: #edf7ef; color: #176b3a; }
+    .status.offline { border-color: #f2c6c2; background: #fff1f0; color: #b42318; }
+    form, .result { border: 1px solid #d1d5db; border-radius: 6px; background: #fff; padding: 24px; }
+    .model, .note, .meta { color: #4b5563; font-size: 13px; }
+    .note { margin-top: 10px; line-height: 1.7; }
+    .row { display: grid; grid-template-columns: 88px 1fr 1fr 1.4fr; gap: 12px; align-items: center; margin-top: 16px; }
+    .row-label { color: #4b5563; font-size: 14px; }
+    label { display: grid; gap: 6px; color: #4b5563; font-size: 13px; }
+    input, select, button { min-height: 38px; border: 1px solid #9ca3af; border-radius: 4px; padding: 7px 9px; font: inherit; }
+    button { border-color: #2563eb; background: #2563eb; color: #fff; cursor: pointer; font-weight: 650; }
+    button.secondary { border-color: #9ca3af; background: #fff; color: #374151; }
+    button:disabled { cursor: wait; opacity: .7; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+    .actions button { margin-top: 0; }
+    .result { margin-top: 20px; }
+    .result[hidden] { display: none; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; min-width: 680px; border-collapse: collapse; margin-top: 16px; }
+    th, td { padding: 11px 10px; border-bottom: 1px solid #e5e7eb; text-align: left; white-space: nowrap; }
+    th { color: #4b5563; font-size: 13px; font-weight: 650; }
+    td { font-size: 14px; }
+    .rank { width: 62px; color: #4b5563; }
+    .score { width: 190px; }
+    .bar { display: inline-block; width: 110px; height: 8px; margin-right: 8px; overflow: hidden; border-radius: 2px; background: #e5e7eb; vertical-align: middle; }
+    .bar span { display: block; height: 100%; background: #4f7cac; }
+    .empty, .error { margin-top: 16px; color: #b42318; }
+    @media (max-width: 700px) {
+      main { width: calc(100% - 24px); margin: 24px auto; }
+      header, .form-header { align-items: flex-start; flex-direction: column; }
+      form, .result { padding: 16px; }
+      .row { grid-template-columns: 1fr; gap: 8px; }
+      .row-label { margin-top: 8px; font-weight: 650; }
+      .actions { flex-direction: column; }
+      .actions button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>下一件未看过商品推荐</h1>
+      <span id="status" class="status">正在检查服务状态...</span>
+    </header>
+    <form id="recommend-form">
+      <div class="form-header">
+        <h2>会话观察窗口</h2>
+        <span class="model">当前排序模型：{{ model }}</span>
+      </div>
+      <p class="note">输入会话中最近的 3 条浏览或加购行为，系统会从候选商品中排除这 3 个已交互商品，推荐之后可能首次出现的商品。数据集不包含商品名称和图片，因此使用商品 ID、类目 ID 和推荐依据展示结果。</p>
+      {% for index in range(3) %}
+      {% set event = example.events[index] if example.events|length > index else {"event": "view", "itemid": "", "timestamp": ""} %}
+      <div class="row">
+        <span class="row-label">行为 {{ index + 1 }}</span>
+        <label>行为类型
+          <select name="event-{{ index + 1 }}">
+            <option value="view" {% if event.event == 'view' %}selected{% endif %}>浏览商品</option>
+            <option value="addtocart" {% if event.event == 'addtocart' %}selected{% endif %}>加入购物车</option>
+          </select>
+        </label>
+        <label>商品 ID<input name="itemid-{{ index + 1 }}" type="number" min="0" value="{{ event.itemid }}" required></label>
+        <label>发生时间<input name="timestamp-{{ index + 1 }}" type="datetime-local" value="{{ event.timestamp[:16] }}" required></label>
+      </div>
+      {% endfor %}
+      <div class="actions">
+        <button id="recommend-button" type="submit">生成推荐</button>
+        <button id="example-button" class="secondary" type="button">换一个真实示例</button>
+      </div>
+      <p id="input-meta" class="meta"></p>
+    </form>
+    <section id="result" class="result" hidden aria-live="polite">
+      <h2 id="result-title">推荐结果</h2>
+      <div id="content"></div>
+    </section>
+  </main>
+  <script>
+    const form = document.getElementById("recommend-form");
+    const button = document.getElementById("recommend-button");
+    const exampleButton = document.getElementById("example-button");
+    const result = document.getElementById("result");
+    const title = document.getElementById("result-title");
+    const content = document.getElementById("content");
+    const status = document.getElementById("status");
+    const inputMeta = document.getElementById("input-meta");
+    const examples = {{ examples|tojson }};
+    let exampleIndex = 0;
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
+    }
+
+    function localInputValue(timestamp) {
+      return timestamp ? timestamp.slice(0, 16) : "";
+    }
+
+    function fillExample(example) {
+      example.events.forEach((event, offset) => {
+        const index = offset + 1;
+        form.elements[`event-${index}`].value = event.event;
+        form.elements[`itemid-${index}`].value = event.itemid;
+        form.elements[`timestamp-${index}`].value = localInputValue(event.timestamp);
+      });
+      inputMeta.textContent = `示例来自测试会话 sample_id=${example.sample_id}；输入商品不会出现在推荐结果中。`;
+    }
+
+    async function checkStatus() {
+      try {
+        const response = await fetch("/health");
+        const data = await response.json();
+        if (!response.ok || data.status !== "ok") throw new Error();
+        status.textContent = `服务正常 · ${data.model} · 可用示例 ${data.examples}`;
+        status.className = "status online";
+      } catch (_) {
+        status.textContent = "服务连接失败";
+        status.className = "status offline";
+      }
+    }
+
+    exampleButton.addEventListener("click", () => {
+      if (!examples.length) return;
+      exampleIndex = (exampleIndex + 1) % examples.length;
+      fillExample(examples[exampleIndex]);
+      result.hidden = true;
+    });
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      const events = [1, 2, 3].map((index) => ({
+        event: values.get(`event-${index}`),
+        itemid: Number(values.get(`itemid-${index}`)),
+        timestamp: new Date(values.get(`timestamp-${index}`)).toISOString(),
+      }));
+      button.disabled = true;
+      button.textContent = "正在生成...";
+      try {
+        const response = await fetch("/recommend", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({events, top_k: 10}),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "推荐请求失败");
+        title.textContent = `Top-${data.top_k} 未看过商品`;
+        content.innerHTML = `<p class="meta">已排除商品：${data.excluded_itemids.join(", ")}</p><div class="table-wrap"><table><thead><tr><th class="rank">排名</th><th>商品 ID</th><th>类目 ID</th><th class="score">相对推荐分</th><th>推荐依据</th></tr></thead><tbody>${data.recommendations.map((item) => `<tr><td class="rank">${item.rank}</td><td>${item.itemid}</td><td>${item.categoryid}</td><td class="score"><span class="bar"><span style="width:${Math.min(100, item.score * 100)}%"></span></span>${(item.score * 100).toFixed(1)}%</td><td>${escapeHtml(item.reason_zh)}</td></tr>`).join("")}</tbody></table></div>`;
+      } catch (error) {
+        title.textContent = "推荐失败";
+        title.className = "error";
+        content.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+      } finally {
+        result.hidden = false;
+        button.disabled = false;
+        button.textContent = "生成推荐";
+      }
+    });
+
+    if (examples.length) fillExample(examples[0]);
+    checkStatus();
+  </script>
+</body>
+</html>
